@@ -67,6 +67,8 @@ class UVUnwrappingPlugin extends BABYLON.MaterialPluginBase {
 
 class ProgressiveShadowMap {
     private _scene: BABYLON.Scene;
+    private _light: BABYLON.DirectionalLight;
+    private _originalLightDirection: BABYLON.Vector3;
     private _size: number;
     private _enableBlur: boolean;
     private _blurIntensity: number;
@@ -79,11 +81,14 @@ class ProgressiveShadowMap {
 
     constructor(
         scene: BABYLON.Scene,
+        light: BABYLON.DirectionalLight,
         size: number = 512,
         enableBlur: boolean = false,
         blurIntensity: number = 1.0,
     ) {
         this._scene = scene;
+        this._light = light;
+        this._originalLightDirection = light.direction.clone();
         this._size = size;
         this._enableBlur = enableBlur;
         this._blurIntensity = blurIntensity;
@@ -151,6 +156,9 @@ class ProgressiveShadowMap {
 
     public render(blendWindow: number = 1): void {
         for (let i = 0; i < blendWindow; i++) {
+            // Apply light jittering for this iteration
+            this._jitterLight(i, blendWindow);
+
             const writeRTT = this._getWriteRTT();
             if (
                 writeRTT.renderList &&
@@ -167,6 +175,9 @@ class ProgressiveShadowMap {
                 this._flipRTTs();
             }
         }
+
+        // Restore original light direction after accumulation
+        this._restoreOriginalLight();
     }
 
     public getShadowMap(): BABYLON.BaseTexture {
@@ -269,6 +280,30 @@ class ProgressiveShadowMap {
         return uv2;
     }
 
+    private _jitterLight(iteration: number, totalIterations: number): void {
+        // Generate pseudo-random jitter based on iteration
+        const jitterRadius = 0.1; // Maximum jitter radius
+        const angle1 = (iteration / totalIterations) * Math.PI * 2 +
+            iteration * 0.618034; // Golden angle
+        const angle2 = Math.sin(iteration * 2.39996) * Math.PI; // Secondary angle
+
+        const jitterX = Math.sin(angle1) * Math.cos(angle2) * jitterRadius;
+        const jitterY = Math.cos(angle1) * jitterRadius;
+        const jitterZ = Math.sin(angle1) * Math.sin(angle2) * jitterRadius;
+
+        const jitteredDirection = this._originalLightDirection.clone();
+        jitteredDirection.x += jitterX;
+        jitteredDirection.y += jitterY;
+        jitteredDirection.z += jitterZ;
+        jitteredDirection.normalize();
+
+        this._light.direction = jitteredDirection;
+    }
+
+    private _restoreOriginalLight(): void {
+        this._light.direction = this._originalLightDirection.clone();
+    }
+
     private _setupBlurPostProcess(): void {
         const kernel = this._blurIntensity * 100.0;
 
@@ -362,6 +397,7 @@ export class Playground {
         // Create progressive shadowmap instance with blur enabled
         const progressiveShadowMap = new ProgressiveShadowMap(
             scene,
+            light,
             512,
             true,
             0.5,
@@ -400,10 +436,10 @@ export class Playground {
         sphere2.makeGeometryUnique();
         sphere3.makeGeometryUnique();
 
-        const whiteMat = new BABYLON.PBRMaterial("whiteMat", scene);
-        whiteMat.albedoColor = BABYLON.Color3.White();
-        whiteMat.metallic = 0.0;
-        whiteMat.roughness = 1.0;
+        const groundMat = new BABYLON.PBRMaterial("groundMat", scene);
+        groundMat.albedoColor = BABYLON.Color3.White();
+        groundMat.metallic = 0.0;
+        groundMat.roughness = 1.0;
         const redMat = new BABYLON.StandardMaterial("redMat", scene);
         redMat.diffuseColor = BABYLON.Color3.Red();
         const greenMat = new BABYLON.StandardMaterial("greenMat", scene);
@@ -411,7 +447,7 @@ export class Playground {
         const blueMat = new BABYLON.StandardMaterial("blueMat", scene);
         blueMat.diffuseColor = BABYLON.Color3.Blue();
 
-        ground.material = whiteMat;
+        ground.material = groundMat;
         sphere1.material = greenMat;
         sphere2.material = redMat;
         sphere3.material = blueMat;
@@ -426,6 +462,9 @@ export class Playground {
         scene.onReadyObservable.addOnce(() => {
             progressiveShadowMap.render(16);
         });
+
+        groundMat.lightmapTexture = progressiveShadowMap.getShadowMap();
+        groundMat.useLightmapAsShadowmap = true;
 
         return scene;
     }
