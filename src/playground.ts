@@ -3,14 +3,13 @@ import * as BABYLON from "@babylonjs/core";
 interface Box {
     w: number;
     h: number;
-    index: number;
-    x: number;
-    y: number;
-    originalUv: BABYLON.FloatArray;
-    minU: number;
-    maxU: number;
-    minV: number;
-    maxV: number;
+    x?: number;
+    y?: number;
+    originalUv?: BABYLON.FloatArray;
+    minU?: number;
+    maxU?: number;
+    minV?: number;
+    maxV?: number;
 }
 
 class UVUnwrappingPlugin extends BABYLON.MaterialPluginBase {
@@ -119,13 +118,16 @@ class ProgressiveShadowMap {
     }
 
     public addMeshes(meshes: BABYLON.AbstractMesh[]): void {
-        const boxes = meshes.map((mesh, index) => {
+        const boxes = meshes.map((mesh) => {
             const uv1 = mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
             if (uv1) {
-                return this._uv1ToBox(uv1, index);
+                return this._uv1ToBox(uv1);
             }
-            return null;
-        }).filter((box): box is Box => box !== null);
+            return {
+                w: 0,
+                h: 0,
+            };
+        });
 
         const { w, h } = potpack(boxes);
 
@@ -139,7 +141,13 @@ class ProgressiveShadowMap {
             ) {
                 return;
             }
-            const uv2 = this._boxToUv2(boxes[index], w, h);
+            const box = boxes[index];
+            if (!box || box.w === 0 || box.h === 0) {
+                console.warn(`Mesh ${mesh.name} has no valid UV data.`);
+                return;
+            }
+
+            const uv2 = this._boxToUv2(box, w, h);
             mesh.setVerticesData(BABYLON.VertexBuffer.UV2Kind, uv2);
 
             const uvMesh = mesh.clone("uv_" + mesh.name, null);
@@ -221,12 +229,11 @@ class ProgressiveShadowMap {
         return material;
     }
 
-    private _uv1ToBox(uv: BABYLON.FloatArray, index: number): Box {
+    private _uv1ToBox(uv: BABYLON.FloatArray): Box {
         if (!uv || uv.length === 0) {
             return {
                 w: 0,
                 h: 0,
-                index,
                 x: 0,
                 y: 0,
                 originalUv: uv,
@@ -249,7 +256,6 @@ class ProgressiveShadowMap {
         return {
             w: maxU - minU,
             h: maxV - minV,
-            index,
             x: 0,
             y: 0,
             originalUv: uv,
@@ -265,9 +271,16 @@ class ProgressiveShadowMap {
         containerW: number,
         containerH: number,
     ): Float32Array {
-        if (!box.originalUv || box.originalUv.length === 0) {
+        if (
+            !box.originalUv || box.originalUv.length === 0 ||
+            box.x === undefined ||
+            box.y === undefined || box.minU === undefined ||
+            box.maxU === undefined || box.minV === undefined ||
+            box.maxV === undefined
+        ) {
             return new Float32Array(0);
         }
+
         const uv2 = new Float32Array(box.originalUv.length);
         for (let i = 0; i < box.originalUv.length; i += 2) {
             const u = box.originalUv[i];
@@ -277,6 +290,7 @@ class ProgressiveShadowMap {
             uv2[i] = (box.x + normalizedU * box.w) / containerW;
             uv2[i + 1] = (box.y + normalizedV * box.h) / containerH;
         }
+
         return uv2;
     }
 
