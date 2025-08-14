@@ -70,9 +70,9 @@ class ProgressiveShadowMap {
     private size: number;
     private enableBlur: boolean;
     private blurIntensity: number;
-    private uvRenderTarget: BABYLON.RenderTargetTexture;
+    private uvRTT: BABYLON.RenderTargetTexture;
     private blurPostProcess?: BABYLON.BlurPostProcess;
-    private blurredRenderTargetTexture?: BABYLON.InternalTexture;
+    private blurredRTT?: BABYLON.RenderTargetTexture;
 
     constructor(
         scene: BABYLON.Scene,
@@ -84,7 +84,8 @@ class ProgressiveShadowMap {
         this.size = size;
         this.enableBlur = enableBlur;
         this.blurIntensity = blurIntensity;
-        this.uvRenderTarget = new BABYLON.RenderTargetTexture(
+
+        this.uvRTT = new BABYLON.RenderTargetTexture(
             "uvTarget",
             size,
             scene,
@@ -98,17 +99,10 @@ class ProgressiveShadowMap {
     }
 
     createUVMaterial(originalMaterial: BABYLON.Material): BABYLON.Material {
-        const material = originalMaterial.clone(
-            "uv_" +
-                originalMaterial.name,
-        );
-
+        const material = originalMaterial.clone("uv_" + originalMaterial.name);
         if (!material) {
-            throw new Error(
-                "Failed to clone material for UV unwrapping.",
-            );
+            throw new Error("Failed to clone material for UV unwrapping.");
         }
-
         new UVUnwrappingPlugin(material, {});
         return material;
     }
@@ -128,17 +122,9 @@ class ProgressiveShadowMap {
                 maxV: 0,
             };
         }
-
-        // Calculate UV bounds
         let minU = Infinity, maxU = -Infinity;
         let minV = Infinity, maxV = -Infinity;
-
-        for (
-            let i = 0;
-            i <
-                uv.length;
-            i += 2
-        ) {
+        for (let i = 0; i < uv.length; i += 2) {
             const u = uv[i];
             const v = uv[i + 1];
             minU = Math.min(minU, u);
@@ -146,7 +132,6 @@ class ProgressiveShadowMap {
             minV = Math.min(minV, v);
             maxV = Math.max(maxV, v);
         }
-
         return {
             w: maxU - minU,
             h: maxV - minV,
@@ -162,37 +147,18 @@ class ProgressiveShadowMap {
     }
 
     boxToUv2(box: Box, containerW: number, containerH: number): Float32Array {
-        if (
-            !box.originalUv ||
-            box.originalUv.length === 0
-        ) {
+        if (!box.originalUv || box.originalUv.length === 0) {
             return new Float32Array(0);
         }
-
         const uv2 = new Float32Array(box.originalUv.length);
-
-        for (
-            let i = 0;
-            i <
-                box.originalUv.length;
-            i += 2
-        ) {
+        for (let i = 0; i < box.originalUv.length; i += 2) {
             const u = box.originalUv[i];
             const v = box.originalUv[i + 1];
-
-            // Normalize to 0-1 within original bounds
-            const normalizedU = (u -
-                box.minU) / (box.maxU - box.minU);
-            const normalizedV = (v -
-                box.minV) / (box.maxV - box.minV);
-
-            // Transform to packed position and normalize by container size
-            uv2[i] = (box.x +
-                normalizedU * box.w) / containerW;
-            uv2[i + 1] = (box.y +
-                normalizedV * box.h) / containerH;
+            const normalizedU = (u - box.minU) / (box.maxU - box.minU);
+            const normalizedV = (v - box.minV) / (box.maxV - box.minV);
+            uv2[i] = (box.x + normalizedU * box.w) / containerW;
+            uv2[i + 1] = (box.y + normalizedV * box.h) / containerH;
         }
-
         return uv2;
     }
 
@@ -200,18 +166,14 @@ class ProgressiveShadowMap {
         const boxes = meshes.map((mesh, index) => {
             const uv1 = mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
             if (uv1) {
-                return this.uv1ToBox(
-                    uv1,
-                    index,
-                );
+                return this.uv1ToBox(uv1, index);
             }
-
             return null;
-        }).filter((box) => box !== null);
-        const { w, h } = potpack(boxes); // transform boxes in place
+        }).filter((box): box is Box => box !== null);
 
-        meshes?.forEach?.((mesh, index) => {
-            // Skip UV meshes, debug planes, and invalid meshes
+        const { w, h } = potpack(boxes);
+
+        meshes.forEach((mesh, index) => {
             if (
                 !mesh ||
                 !mesh.getVerticesData ||
@@ -220,85 +182,78 @@ class ProgressiveShadowMap {
             ) {
                 return;
             }
-
-            // Set UV2 coordinates
             const uv2 = this.boxToUv2(boxes[index], w, h);
             mesh.setVerticesData(BABYLON.VertexBuffer.UV2Kind, uv2);
 
-            // Clone mesh for UV rendering
             const uvMesh = mesh.clone("uv_" + mesh.name, null);
             if (uvMesh && mesh.material) {
                 uvMesh.material = this.createUVMaterial(mesh.material);
-
-                if (!this.uvRenderTarget.renderList) {
-                    this.uvRenderTarget.renderList = [];
+                if (!this.uvRTT.renderList) {
+                    this.uvRTT.renderList = [];
                 }
-                this.uvRenderTarget
-                    .renderList.push(uvMesh);
+                this.uvRTT.renderList.push(uvMesh);
             }
         });
     }
 
     async render(): Promise<void> {
         if (
-            this.uvRenderTarget.renderList &&
-            this.uvRenderTarget.renderList.length >
-                0
+            this.uvRTT.renderList &&
+            this.uvRTT.renderList.length > 0
         ) {
-            this.uvRenderTarget.render();
-
-            if (
-                this.enableBlur &&
-                this.blurPostProcess
-            ) {
-                this.blurredRenderTargetTexture = await BABYLON
-                    .ApplyPostProcess(
-                        this.blurPostProcess.name,
-                        this.uvRenderTarget.getInternalTexture()!,
-                        this.scene,
-                    );
-            }
-
-            this.uvRenderTarget.renderList.forEach((mesh) =>
-                mesh.isVisible = false
-            );
+            this.uvRTT.render();
+            this.uvRTT.renderList.forEach((mesh) => {
+                mesh.isVisible = false;
+            });
         }
     }
 
-    getTexture():
-        | BABYLON.RenderTargetTexture
-        | BABYLON.InternalTexture {
-        // Return blurred texture if blur is enabled and available, otherwise return original
-        return (this.enableBlur &&
-                this.blurredRenderTargetTexture)
-            ? this.blurredRenderTargetTexture
-            : this.uvRenderTarget;
+    getTexture(): BABYLON.RenderTargetTexture | BABYLON.InternalTexture {
+        if (this.enableBlur && this.blurredRTT) {
+            return this.blurredRTT;
+        }
+        return this.uvRTT;
     }
 
-    getRenderTarget():
-        | BABYLON.RenderTargetTexture
-        | BABYLON.InternalTexture {
+    getRenderTarget(): BABYLON.RenderTargetTexture | BABYLON.InternalTexture {
         return this.getTexture();
     }
 
     private setupBlurPostProcess(): void {
-        const kernel = this.blurIntensity * 100.0; // Convert intensity to kernel size
+        const kernel = this.blurIntensity * 100.0;
+
+        // Horizontal blur first
         this.blurPostProcess = new BABYLON.BlurPostProcess(
-            "blurPostProcess",
-            new BABYLON.Vector2(1.0, 0), // Horizontal blur first
+            "Horizontal blur",
+            new BABYLON.Vector2(1.0, 0),
             kernel,
-            1.0,
+            1,
             null,
-            BABYLON.Texture.BILINEAR_SAMPLINGMODE,
+            0,
             this.scene.getEngine(),
         );
-
         this.blurPostProcess.width = this.size;
         this.blurPostProcess.height = this.size;
 
         this.blurPostProcess.onApply = (effect: BABYLON.Effect) => {
-            effect.setTexture("textureSampler", this.uvRenderTarget);
+            effect.setTexture("textureSampler", this.uvRTT);
         };
+
+        // Create the output RTT for the blurred result
+        this.blurredRTT = new BABYLON.RenderTargetTexture(
+            "blurredUV",
+            this.size,
+            this.scene,
+        );
+
+        // Each frame, render blur into blurredRTT
+        this.scene.onAfterRenderObservable.add(() => {
+            this.scene.postProcessManager.directRender(
+                [this.blurPostProcess!],
+                this.blurredRTT!.renderTarget,
+                true,
+            );
+        });
     }
 }
 
@@ -342,7 +297,7 @@ export class Playground {
             scene,
             512,
             true,
-            10.0,
+            0.5,
         );
 
         // Create debug plane to show the UV render target
@@ -379,11 +334,10 @@ export class Playground {
         sphere3.position.x = -7;
 
         sphere2.makeGeometryUnique();
-
         sphere3.makeGeometryUnique();
 
-        const whiteMat = new BABYLON.StandardMaterial("whiteMat", scene);
-        whiteMat.diffuseColor = BABYLON.Color3.White();
+        const whiteMat = new BABYLON.PBRMaterial("whiteMat", scene);
+        whiteMat.albedoColor = BABYLON.Color3.White();
         const redMat = new BABYLON.StandardMaterial("redMat", scene);
         redMat.diffuseColor = BABYLON.Color3.Red();
         const greenMat = new BABYLON.StandardMaterial("greenMat", scene);
