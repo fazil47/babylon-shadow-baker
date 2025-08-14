@@ -71,7 +71,8 @@ class ProgressiveShadowMap {
     private enableBlur: boolean;
     private blurIntensity: number;
     private uvRTT: BABYLON.RenderTargetTexture;
-    private blurPostProcess?: BABYLON.BlurPostProcess;
+    private blurPostProcessHorizontal?: BABYLON.BlurPostProcess;
+    private blurPostProcessVertical?: BABYLON.BlurPostProcess;
     private blurredRTT?: BABYLON.RenderTargetTexture;
 
     constructor(
@@ -223,7 +224,7 @@ class ProgressiveShadowMap {
         const kernel = this.blurIntensity * 100.0;
 
         // Horizontal blur first
-        this.blurPostProcess = new BABYLON.BlurPostProcess(
+        this.blurPostProcessHorizontal = new BABYLON.BlurPostProcess(
             "Horizontal blur",
             new BABYLON.Vector2(1.0, 0),
             kernel,
@@ -232,10 +233,25 @@ class ProgressiveShadowMap {
             0,
             this.scene.getEngine(),
         );
-        this.blurPostProcess.width = this.size;
-        this.blurPostProcess.height = this.size;
+        this.blurPostProcessHorizontal.width = this.size;
+        this.blurPostProcessHorizontal.height = this.size;
+        this.blurPostProcessHorizontal.onApply = (effect: BABYLON.Effect) => {
+            effect.setTexture("textureSampler", this.uvRTT);
+        };
 
-        this.blurPostProcess.onApply = (effect: BABYLON.Effect) => {
+        // Vertical blur second
+        this.blurPostProcessVertical = new BABYLON.BlurPostProcess(
+            "Vertical blur",
+            new BABYLON.Vector2(0, 1.0),
+            kernel,
+            1,
+            null,
+            0,
+            this.scene.getEngine(),
+        );
+        this.blurPostProcessVertical.width = this.size;
+        this.blurPostProcessVertical.height = this.size;
+        this.blurPostProcessVertical.onApply = (effect: BABYLON.Effect) => {
             effect.setTexture("textureSampler", this.uvRTT);
         };
 
@@ -249,7 +265,10 @@ class ProgressiveShadowMap {
         // Each frame, render blur into blurredRTT
         this.scene.onAfterRenderObservable.add(() => {
             this.scene.postProcessManager.directRender(
-                [this.blurPostProcess!],
+                [
+                    this.blurPostProcessHorizontal!,
+                    this.blurPostProcessVertical!,
+                ],
                 this.blurredRTT!.renderTarget,
                 true,
             );
