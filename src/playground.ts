@@ -428,7 +428,7 @@ export class Playground {
             light,
             512,
             true,
-            0.5,
+            0.25,
         );
 
         const ground = BABYLON.MeshBuilder.CreateGround("ground", {
