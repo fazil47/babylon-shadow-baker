@@ -66,9 +66,11 @@ class UVUnwrappingPlugin extends BABYLON.MaterialPluginBase {
 
 class ProgressiveShadowMap {
     private _scene: BABYLON.Scene;
+    private _size: number;
+    private _onRenderObservable: BABYLON.Observable<void>;
     private _light: BABYLON.DirectionalLight;
     private _originalLightDirection: BABYLON.Vector3;
-    private _size: number;
+
     private _enableBlur: boolean;
     private _blurIntensity: number;
     private _blurPostProcessHorizontal?: BABYLON.BlurPostProcess;
@@ -86,9 +88,10 @@ class ProgressiveShadowMap {
         blurIntensity: number = 1.0,
     ) {
         this._scene = scene;
+        this._size = size;
+        this._onRenderObservable = new BABYLON.Observable<void>();
         this._light = light;
         this._originalLightDirection = light.direction.clone();
-        this._size = size;
         this._enableBlur = enableBlur;
         this._blurIntensity = blurIntensity;
 
@@ -115,6 +118,10 @@ class ProgressiveShadowMap {
         if (this._enableBlur) {
             this._setupBlurPostProcess();
         }
+    }
+
+    public get onRenderObservable(): BABYLON.Observable<void> {
+        return this._onRenderObservable;
     }
 
     public addMeshes(meshes: BABYLON.AbstractMesh[]): void {
@@ -184,8 +191,14 @@ class ProgressiveShadowMap {
             }
         }
 
+        // Use UV2 for the final texture
+        const readRTT = this._getReadRTT();
+        readRTT.coordinatesIndex = 1;
+
         // Restore original light direction after accumulation
         this._restoreOriginalLight();
+
+        this._onRenderObservable.notifyObservers();
     }
 
     public getShadowMap(): BABYLON.BaseTexture {
@@ -200,6 +213,7 @@ class ProgressiveShadowMap {
         this._pingPongRTT2?.dispose();
         this._blurPostProcessHorizontal?.dispose();
         this._blurPostProcessVertical?.dispose();
+        this._onRenderObservable.clear();
     }
 
     private _getWriteRTT(): BABYLON.RenderTargetTexture {
@@ -417,21 +431,6 @@ export class Playground {
             0.5,
         );
 
-        // Create debug plane to show the UV render target
-        const debugPlane = BABYLON.MeshBuilder.CreatePlane("debugPlane", {
-            size: 10,
-        }, scene);
-        debugPlane.position.z = -15;
-        debugPlane.position.y = 5;
-        debugPlane.rotation.y = Math.PI; // Rotate 180 degrees
-
-        const debugMaterial = new BABYLON.StandardMaterial("debugMat", scene);
-
-        debugMaterial.backFaceCulling = false;
-        debugMaterial.diffuseTexture = progressiveShadowMap.getShadowMap();
-        debugMaterial.emissiveTexture = progressiveShadowMap.getShadowMap();
-        debugPlane.material = debugMaterial;
-
         const ground = BABYLON.MeshBuilder.CreateGround("ground", {
             width: 30,
             height: 30,
@@ -480,8 +479,67 @@ export class Playground {
         groundMat.lightmapTexture = progressiveShadowMap.getShadowMap();
         groundMat.useLightmapAsShadowmap = true;
 
+        progressiveShadowMap.onRenderObservable.addOnce(async () => {
+            shadowGenerator.dispose();
+
+            // Create a debug plane to visualize the shadow map
+            const debugPlane = BABYLON.MeshBuilder.CreatePlane("debugPlane", {
+                size: 10,
+            }, scene);
+            debugPlane.position.z = -15;
+            debugPlane.position.y = 5;
+            debugPlane.rotation.y = Math.PI; // Rotate 180 degrees
+
+            const debugMaterial = new BABYLON.StandardMaterial(
+                "debugMat",
+                scene,
+            );
+            debugMaterial.backFaceCulling = false;
+            debugMaterial.diffuseTexture = await deepCloneTexture(
+                progressiveShadowMap.getShadowMap(),
+            ); // Deep clone the texture to use the UV1 coordinates
+            debugPlane.material = debugMaterial;
+        });
+
         return scene;
     }
+}
+
+async function deepCloneTexture(
+    texture: BABYLON.BaseTexture,
+): Promise<BABYLON.BaseTexture> {
+    const engine = texture.getScene()!.getEngine();
+    if (!(engine instanceof BABYLON.Engine)) {
+        console.warn("deepCloneTexture is only supported in WebGL2.");
+        return texture;
+    }
+
+    const pixels = await texture.readPixels();
+    const destinationPixels = new Uint8Array(pixels!.buffer).slice(0);
+    const currentTextureSize = texture.getSize();
+
+    // Create a new render target texture with the same size
+    const clonedTexture = new BABYLON.RenderTargetTexture(
+        texture.name + "_clone",
+        currentTextureSize,
+        texture.getScene()!,
+        false,
+        true,
+    );
+
+    engine.updateTextureData(
+        clonedTexture.getInternalTexture()!,
+        destinationPixels,
+        0,
+        0,
+        currentTextureSize.width,
+        currentTextureSize.height,
+        0,
+        0,
+        false,
+    );
+
+    return clonedTexture;
 }
 
 /**
