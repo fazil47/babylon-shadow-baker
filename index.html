@@ -208,7 +208,8 @@
                 const progressiveShadowMap = new ProgressiveShadowMap(scene, 512);
                 // Create debug plane to show the UV render target
                 const debugPlane = BABYLON.MeshBuilder.CreatePlane("debugPlane", { size: 10 }, scene);
-                debugPlane.position.z = 15;
+                debugPlane.position.z = -15;
+                debugPlane.position.y = 5;
                 debugPlane.rotation.y = Math.PI; // Rotate 180 degrees
                 const debugMaterial = new BABYLON.StandardMaterial("debugMat", scene);
                 debugMaterial.backFaceCulling = false;
