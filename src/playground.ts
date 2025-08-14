@@ -270,7 +270,7 @@ export class Playground {
             new BABYLON.Vector3(0, 1, 0),
             scene,
         );
-        light.intensity = 2.0;
+        light.intensity = 4.0;
         light.direction = new BABYLON.Vector3(
             0.3204164226684694,
             -0.897774797464629,
@@ -338,6 +338,8 @@ export class Playground {
 
         const whiteMat = new BABYLON.PBRMaterial("whiteMat", scene);
         whiteMat.albedoColor = BABYLON.Color3.White();
+        whiteMat.metallic = 0.0;
+        whiteMat.roughness = 1.0;
         const redMat = new BABYLON.StandardMaterial("redMat", scene);
         redMat.diffuseColor = BABYLON.Color3.Red();
         const greenMat = new BABYLON.StandardMaterial("greenMat", scene);
