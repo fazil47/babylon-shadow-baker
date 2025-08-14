@@ -66,14 +66,16 @@ class UVUnwrappingPlugin extends BABYLON.MaterialPluginBase {
 }
 
 class ProgressiveShadowMap {
-    private scene: BABYLON.Scene;
-    private size: number;
-    private enableBlur: boolean;
-    private blurIntensity: number;
-    private uvRTT: BABYLON.RenderTargetTexture;
-    private blurPostProcessHorizontal?: BABYLON.BlurPostProcess;
-    private blurPostProcessVertical?: BABYLON.BlurPostProcess;
-    private blurredRTT?: BABYLON.RenderTargetTexture;
+    private _scene: BABYLON.Scene;
+    private _size: number;
+    private _enableBlur: boolean;
+    private _blurIntensity: number;
+    private _blurPostProcessHorizontal?: BABYLON.BlurPostProcess;
+    private _blurPostProcessVertical?: BABYLON.BlurPostProcess;
+
+    private _pingPongRTT1: BABYLON.RenderTargetTexture;
+    private _pingPongRTT2?: BABYLON.RenderTargetTexture;
+    private _useAlternateRTT: boolean = false;
 
     constructor(
         scene: BABYLON.Scene,
@@ -81,25 +83,125 @@ class ProgressiveShadowMap {
         enableBlur: boolean = false,
         blurIntensity: number = 1.0,
     ) {
-        this.scene = scene;
-        this.size = size;
-        this.enableBlur = enableBlur;
-        this.blurIntensity = blurIntensity;
+        this._scene = scene;
+        this._size = size;
+        this._enableBlur = enableBlur;
+        this._blurIntensity = blurIntensity;
 
-        this.uvRTT = new BABYLON.RenderTargetTexture(
-            "uvTarget",
+        this._pingPongRTT1 = new BABYLON.RenderTargetTexture(
+            "pingPongRTT1",
             size,
             scene,
             false,
             true,
         );
+        this._pingPongRTT1.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+        this._pingPongRTT1.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
 
-        if (this.enableBlur) {
-            this.setupBlurPostProcess();
+        this._pingPongRTT2 = new BABYLON.RenderTargetTexture(
+            "pingPongRTT2",
+            size,
+            scene,
+            false,
+            true,
+        );
+        this._pingPongRTT2.wrapU = BABYLON.Texture.CLAMP_ADDRESSMODE;
+        this._pingPongRTT2.wrapV = BABYLON.Texture.CLAMP_ADDRESSMODE;
+
+        if (this._enableBlur) {
+            this._setupBlurPostProcess();
         }
     }
 
-    createUVMaterial(originalMaterial: BABYLON.Material): BABYLON.Material {
+    public addMeshes(meshes: BABYLON.AbstractMesh[]): void {
+        const boxes = meshes.map((mesh, index) => {
+            const uv1 = mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
+            if (uv1) {
+                return this._uv1ToBox(uv1, index);
+            }
+            return null;
+        }).filter((box): box is Box => box !== null);
+
+        const { w, h } = potpack(boxes);
+
+        const writeRTT = this._getWriteRTT();
+        meshes.forEach((mesh, index) => {
+            if (
+                !mesh ||
+                !mesh.getVerticesData ||
+                mesh.name.startsWith("uv_") ||
+                mesh.name.includes("debugPlane")
+            ) {
+                return;
+            }
+            const uv2 = this._boxToUv2(boxes[index], w, h);
+            mesh.setVerticesData(BABYLON.VertexBuffer.UV2Kind, uv2);
+
+            const uvMesh = mesh.clone("uv_" + mesh.name, null);
+            if (uvMesh && mesh.material) {
+                if (!writeRTT?.renderList) {
+                    writeRTT.renderList = [];
+                }
+
+                uvMesh.material = this._createUVMaterial(mesh.material);
+                writeRTT.renderList.push(uvMesh);
+            }
+        });
+    }
+
+    public render(blendWindow: number = 1): void {
+        for (let i = 0; i < blendWindow; i++) {
+            const writeRTT = this._getWriteRTT();
+            if (
+                writeRTT.renderList &&
+                writeRTT.renderList?.length > 0
+            ) {
+                writeRTT.render();
+
+                if (i == blendWindow - 1) {
+                    writeRTT.renderList.forEach((mesh) => {
+                        mesh.isVisible = false;
+                    });
+                }
+
+                this._flipRTTs();
+            }
+        }
+    }
+
+    public getShadowMap(): BABYLON.BaseTexture {
+        return this._getReadRTT();
+    }
+
+    public dispose(): void {
+        this._pingPongRTT1.renderList?.forEach((mesh) => {
+            mesh.dispose();
+        });
+        this._pingPongRTT1.dispose();
+        this._pingPongRTT2?.dispose();
+        this._blurPostProcessHorizontal?.dispose();
+        this._blurPostProcessVertical?.dispose();
+    }
+
+    private _getWriteRTT(): BABYLON.RenderTargetTexture {
+        return this._useAlternateRTT ? this._pingPongRTT2! : this._pingPongRTT1;
+    }
+
+    private _getReadRTT(): BABYLON.RenderTargetTexture {
+        return this._useAlternateRTT ? this._pingPongRTT1 : this._pingPongRTT2!;
+    }
+
+    private _flipRTTs(): void {
+        this._useAlternateRTT = !this._useAlternateRTT;
+        const writeRTT = this._getWriteRTT();
+        const readRTT = this._getReadRTT();
+        writeRTT.renderList = readRTT.renderList;
+        readRTT.renderList = [];
+    }
+
+    private _createUVMaterial(
+        originalMaterial: BABYLON.Material,
+    ): BABYLON.Material {
         const material = originalMaterial.clone("uv_" + originalMaterial.name);
         if (!material) {
             throw new Error("Failed to clone material for UV unwrapping.");
@@ -108,7 +210,7 @@ class ProgressiveShadowMap {
         return material;
     }
 
-    uv1ToBox(uv: BABYLON.FloatArray, index: number): Box {
+    private _uv1ToBox(uv: BABYLON.FloatArray, index: number): Box {
         if (!uv || uv.length === 0) {
             return {
                 w: 0,
@@ -147,7 +249,11 @@ class ProgressiveShadowMap {
         };
     }
 
-    boxToUv2(box: Box, containerW: number, containerH: number): Float32Array {
+    private _boxToUv2(
+        box: Box,
+        containerW: number,
+        containerH: number,
+    ): Float32Array {
         if (!box.originalUv || box.originalUv.length === 0) {
             return new Float32Array(0);
         }
@@ -163,113 +269,55 @@ class ProgressiveShadowMap {
         return uv2;
     }
 
-    addMeshes(meshes: BABYLON.AbstractMesh[]): void {
-        const boxes = meshes.map((mesh, index) => {
-            const uv1 = mesh.getVerticesData(BABYLON.VertexBuffer.UVKind);
-            if (uv1) {
-                return this.uv1ToBox(uv1, index);
-            }
-            return null;
-        }).filter((box): box is Box => box !== null);
-
-        const { w, h } = potpack(boxes);
-
-        meshes.forEach((mesh, index) => {
-            if (
-                !mesh ||
-                !mesh.getVerticesData ||
-                mesh.name.startsWith("uv_") ||
-                mesh.name.includes("debugPlane")
-            ) {
-                return;
-            }
-            const uv2 = this.boxToUv2(boxes[index], w, h);
-            mesh.setVerticesData(BABYLON.VertexBuffer.UV2Kind, uv2);
-
-            const uvMesh = mesh.clone("uv_" + mesh.name, null);
-            if (uvMesh && mesh.material) {
-                uvMesh.material = this.createUVMaterial(mesh.material);
-                if (!this.uvRTT.renderList) {
-                    this.uvRTT.renderList = [];
-                }
-                this.uvRTT.renderList.push(uvMesh);
-            }
-        });
-    }
-
-    async render(): Promise<void> {
-        if (
-            this.uvRTT.renderList &&
-            this.uvRTT.renderList.length > 0
-        ) {
-            this.uvRTT.render();
-            this.uvRTT.renderList.forEach((mesh) => {
-                mesh.isVisible = false;
-            });
-        }
-    }
-
-    getTexture(): BABYLON.RenderTargetTexture | BABYLON.InternalTexture {
-        if (this.enableBlur && this.blurredRTT) {
-            return this.blurredRTT;
-        }
-        return this.uvRTT;
-    }
-
-    getRenderTarget(): BABYLON.RenderTargetTexture | BABYLON.InternalTexture {
-        return this.getTexture();
-    }
-
-    private setupBlurPostProcess(): void {
-        const kernel = this.blurIntensity * 100.0;
+    private _setupBlurPostProcess(): void {
+        const kernel = this._blurIntensity * 100.0;
 
         // Horizontal blur first
-        this.blurPostProcessHorizontal = new BABYLON.BlurPostProcess(
+        this._blurPostProcessHorizontal = new BABYLON.BlurPostProcess(
             "Horizontal blur",
             new BABYLON.Vector2(1.0, 0),
             kernel,
             1,
             null,
             0,
-            this.scene.getEngine(),
+            this._scene.getEngine(),
         );
-        this.blurPostProcessHorizontal.width = this.size;
-        this.blurPostProcessHorizontal.height = this.size;
-        this.blurPostProcessHorizontal.onApply = (effect: BABYLON.Effect) => {
-            effect.setTexture("textureSampler", this.uvRTT);
+        this._blurPostProcessHorizontal.width = this._size;
+        this._blurPostProcessHorizontal.height = this._size;
+        this._blurPostProcessHorizontal.onApply = (effect: BABYLON.Effect) => {
+            effect.setTexture("textureSampler", this._getWriteRTT());
         };
 
         // Vertical blur second
-        this.blurPostProcessVertical = new BABYLON.BlurPostProcess(
+        this._blurPostProcessVertical = new BABYLON.BlurPostProcess(
             "Vertical blur",
             new BABYLON.Vector2(0, 1.0),
             kernel,
             1,
             null,
             0,
-            this.scene.getEngine(),
+            this._scene.getEngine(),
         );
-        this.blurPostProcessVertical.width = this.size;
-        this.blurPostProcessVertical.height = this.size;
-        this.blurPostProcessVertical.onApply = (effect: BABYLON.Effect) => {
-            effect.setTexture("textureSampler", this.uvRTT);
+        this._blurPostProcessVertical.width = this._size;
+        this._blurPostProcessVertical.height = this._size;
+        this._blurPostProcessVertical.onApply = (effect: BABYLON.Effect) => {
+            effect.setTexture("textureSampler", this._getWriteRTT());
         };
 
-        // Create the output RTT for the blurred result
-        this.blurredRTT = new BABYLON.RenderTargetTexture(
-            "blurredUV",
-            this.size,
-            this.scene,
-        );
+        this._scene.onAfterRenderObservable.add(() => {
+            const readRTT = this._getReadRTT()?.renderTarget;
 
-        // Each frame, render blur into blurredRTT
-        this.scene.onAfterRenderObservable.add(() => {
-            this.scene.postProcessManager.directRender(
+            if (!readRTT) {
+                console.warn("Read RTT not found.");
+                return;
+            }
+
+            this._scene.postProcessManager.directRender(
                 [
-                    this.blurPostProcessHorizontal!,
-                    this.blurPostProcessVertical!,
+                    this._blurPostProcessHorizontal!,
+                    this._blurPostProcessVertical!,
                 ],
-                this.blurredRTT!.renderTarget,
+                readRTT,
                 true,
             );
         });
@@ -330,11 +378,8 @@ export class Playground {
         const debugMaterial = new BABYLON.StandardMaterial("debugMat", scene);
 
         debugMaterial.backFaceCulling = false;
-        debugMaterial.diffuseTexture = progressiveShadowMap
-            .getTexture() as BABYLON.BaseTexture;
-
-        debugMaterial.emissiveTexture = progressiveShadowMap
-            .getTexture() as BABYLON.BaseTexture;
+        debugMaterial.diffuseTexture = progressiveShadowMap.getShadowMap();
+        debugMaterial.emissiveTexture = progressiveShadowMap.getShadowMap();
         debugPlane.material = debugMaterial;
 
         const ground = BABYLON.MeshBuilder.CreateGround("ground", {
@@ -378,11 +423,9 @@ export class Playground {
         ground.receiveShadows = true;
 
         progressiveShadowMap.addMeshes([ground, sphere1, sphere2, sphere3]);
-
-        // Render UV layout
-        setTimeout(() => {
-            progressiveShadowMap.render();
-        }, 500);
+        scene.onReadyObservable.addOnce(() => {
+            progressiveShadowMap.render(16);
+        });
 
         return scene;
     }
