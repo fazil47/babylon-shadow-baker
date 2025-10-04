@@ -113,12 +113,16 @@ class ProgressiveShadowMapMaterialPlugin extends BABYLON.MaterialPluginBase {
       `;
     } else if (shaderType === "fragment") {
       customCode["CUSTOM_FRAGMENT_DEFINITIONS"] = `
-        uniform sampler2D previousShadowMap;
-        varying vec2 vUV2;
+        #ifndef FIRST_ITERATION
+          uniform sampler2D previousShadowMap;
+          varying vec2 vUV2;
+        #endif
       `;
       customCode["CUSTOM_FRAGMENT_MAIN_END"] = `
-        vec4 previousShadowColor = texture2D(previousShadowMap, vUV2);
-        gl_FragColor.rgb = mix(previousShadowColor.rgb, gl_FragColor.rgb, 0.1);
+        #ifndef FIRST_ITERATION
+          vec4 previousShadowColor = texture2D(previousShadowMap, vUV2);
+          gl_FragColor.rgb = mix(previousShadowColor.rgb, gl_FragColor.rgb, 0.1);
+        #endif
       `;
     }
 
